@@ -43,20 +43,29 @@ settings = {
     'data_source': 'CDS',
 }
 
+# LES/SCM variables to create; `None` = all (see `ls2d.les_outputs()`).
+# Only the ERA5 fields needed for these are downloaded and read.
+outputs = None
+
 # Download required ERA5 files:
-ls2d.download_era5(settings)
+ls2d.download_era5(settings, outputs=outputs)
 
-# Read ERA5 data, and calculate derived properties (thl, etc.):
-era = ls2d.Read_era5(settings)
+# Read the raw ERA5 fields:
+raw = ls2d.read_era5(settings, outputs=outputs)
 
-# Calculate large-scale forcings:
+# Calculate the large-scale forcings, and the area averaged column profiles.
 # `n_av` is the number of ERA5 gridpoints (+/-) over which
 # the ERA5 variables and forcings are averaged.
-era.calculate_forcings(n_av=1, method='2nd')
+column = ls2d.calculate_forcings(raw, n_av=1, method='2nd', outputs=outputs)
 
 # Interpolate ERA5 to fixed height grid:
 z = np.arange(10, 5000, 20).astype(float)
-les_input = era.get_les_input(z)
+les_input = ls2d.get_les_input(column, z, outputs=outputs)
+
+# The steps above can also be done with the (older) object oriented interface:
+# era = ls2d.Read_era5(settings)
+# era.calculate_forcings(n_av=1, method='2nd')
+# les_input = era.get_les_input(z)
 
 # `les_input` is an xarray.Dataset, which can easily be save to NetCDF:
 les_input.to_netcdf('ls2d_era5.nc')

@@ -1,8 +1,11 @@
 # LS2D redesign plan: stateless, registry-driven ERA5 → LES pipeline
 
-Status: **proposal, nothing implemented yet**.
-Base: `LS2D/LS2D@main` (`ba5f737`, identical to this fork's `main`). See *Choosing the base* below:
-upstream's `develop_arco` already started part of this split.
+Status: **implemented** (steps 1–7), see *Implementation notes* at the end for where the
+implementation differs from this plan. Step 8 (CAMS) is not done yet.
+Base: `LS2D/LS2D@develop_arco` (`1941dd7`).
+
+Decisions: base on `develop_arco`; keep the `Read_era5` wrapper; MARS requests (and all other
+sources) only request the ERA5 fields needed for the requested outputs.
 
 ---
 
@@ -251,3 +254,48 @@ Building on `main` instead risks a large conflict with that branch when it lands
 4. Keep NetCDF-file-per-levtype layout on disk (`model_an.nc`, `pressure_an.nc`, `surface_an.nc`) — recommended, so
    existing downloads stay valid. Re-downloading is only needed when a new field is added; the reader would then
    report which fields are missing from existing files.
+
+---
+
+## 7. Implementation notes
+
+Layout as implemented:
+
+```
+src/ls2d/forcing/
+  registry.py     Era5Field, Quantity, Registry (resolve / evaluate), default `registry`
+  era5_fields.py  ERA5 catalogue (shared by CDS, MARS and ARCO, hence not in `ecmwf/`)
+  context.py      Context (settings + operators) and Domain (averaging area + halo)
+  fields.py       field quantities (pointwise on the ERA5 grid)
+  column.py       column quantities (advection, geostrophic wind, Coriolis, Th)
+  les.py          LES output table, get_les_input()
+  raw.py          raw dataset conventions, shared by the readers
+  pipeline.py     required_era5_fields(), compute_fields(), calculate_forcings()
+```
+
+Differences from the plan above:
+
+- **ERA5 keys** are `{levtype}:{name}` (`ml:t`, `pl:z`, `sfc:sp`); the raw dataset uses the same keys as variable names.
+- **Column variables keep the field names** (`thl`, not `thl_mean`). A field quantity's `reduce` attribute
+  (`'mean'`, `'nearest'` or a function) decides how it appears in the column dataset; there is no separate table.
+- **Interpolated LES outputs also require the column `z`**, so e.g. `outputs=['ug']` still downloads the
+  model-level thermodynamics (`ls2d.registry.required_era5_fields(['ug'])` = `pl:z`, `sfc:sp` only).
+- **Physics follows the `develop_arco` ARCO path** where it differed from the legacy `Read_era5`:
+  `h2o_lay` uses `qv` instead of `qt`, and `wq` is divided by the surface density (legacy returned kg m-2 s-1).
+  The long names of the released version are kept (`ECMWF soil type ...`).
+- **Small domains:** with `method='2nd'` the halo shrinks to what is available (one-sided gradients at the edge,
+  as in the legacy code, with a warning). `method='4th'` needs the full halo.
+- **Defaults:** `calculate_forcings(method='2nd')` (as `create_column_input`), `Read_era5.calculate_forcings(method='4th')`
+  (as before).
+- **Downloads:** files that exist but miss a required field are downloaded again, including the fields already in them.
+  `download_era5(settings)` also dispatches to ARCO with `data_source='ARCO'`.
+- **`develop_arco` API:** `read_era5_arco()` returns `compute_fields(raw)` (a superset of the old generic dataset), and
+  `create_column_input()` is a shortcut for `get_les_input(calculate_forcings(...))`. `ls2d.column.validate` now checks
+  the raw dataset.
+- `Read_era5` keeps its three methods; the old per-variable attributes (`era.thl`, `era.z_mean`, ...) are replaced by
+  `era.raw` and `era.column` (none of the examples used them).
+
+Verification (`pytest tests`, synthetic ERA5 in the real file layouts, no downloads needed): the new pipeline and the
+`Read_era5` wrapper reproduce the pre-refactor output (`tests/data/golden_*.nc`, from `tests/make_golden.py`) to
+1e-10 for 2nd and 4th order and for a 3×3 domain, except the two deliberate physics changes; the ARCO path matches to
+float32 precision. Requests are checked against the old hard-coded CDS lists.

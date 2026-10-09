@@ -73,7 +73,48 @@ All settings for (LS)<sup>2</sup>D are wrapped in a dictionary:
 - `start_date`: Python `datetime` object with start date/time
 - `end_date`: Python `datetime` object with end date/time
 - `write_log`: Write ERA5 download to screen (`False`) or log file (`True`)
-- `data_source`: Download method (`CDS` or `MARS`). `MARS` only works on e.g. the ECMWF supercomputer.
+- `data_source`: Download method (`CDS`, `MARS`, or `ARCO`). `MARS` only works on e.g. the ECMWF supercomputer. `ARCO` uses the [Google ARCO-ERA5](https://github.com/google-research/arco-era5) archive.
+
+### Processing pipeline
+
+The processing consists of stateless functions, which each take and return an `xarray.Dataset`:
+
+```python
+outputs = None                                                  # or e.g. ['thl', 'qt', 'ug', 'vg']
+ls2d.download_era5(settings, outputs=outputs)                   # downloads only the ERA5 fields needed for `outputs`
+raw = ls2d.read_era5(settings, outputs=outputs)                 # raw ERA5 fields (`ml:t`, `sfc:sp`, ...)
+column = ls2d.calculate_forcings(raw, n_av=1, method='2nd', outputs=outputs)  # area averaged column + forcings
+les_input = ls2d.get_les_input(column, z, outputs=outputs)      # interpolated to LES grid `z`
+```
+
+`outputs` selects the LES variables (`ls2d.les_outputs()` lists all of them, which is the default). Pass the same list to every step. The old interface (`era = ls2d.Read_era5(settings)`, `era.calculate_forcings()`, `era.get_les_input(z)`) still works, and is a thin wrapper around these functions.
+
+### Adding variables
+
+Everything that (LS)<sup>2</sup>D downloads and computes is defined in a registry (see `src/ls2d/forcing/`). Each quantity declares what it requires, and the registry works out what to download and in which order to compute things. Adding e.g. the 2 m temperature to the download, processing, and LES input:
+
+```python
+# 1. Raw ERA5 field, with its names for MARS / CDS / Google ARCO.
+ls2d.era5_field('t2m', 'sfc', '167.128', cds='2m_temperature', arco='2m_temperature', units='K')
+
+# 2. Quantity computed from it, here simply the field itself, averaged over the `n_av` area.
+@ls2d.quantity('t2m', requires=('sfc:t2m',), units='K', long_name='2 m temperature', reduce='mean')
+def t2m(t2m, ctx):
+    return t2m
+
+# 3. Add to the LES input.
+ls2d.les_output('t2m', 't2m', '2 m temperature', 'K')
+```
+
+Existing ERA5 files without the new field are downloaded again by `ls2d.download_era5()`. Quantities are either computed pointwise on the ERA5 grid (`stage='field'`, the default), or from the averaging area including a halo for horizontal gradients (`stage='column'`), for example:
+
+```python
+@ls2d.quantity('dtT_advec', requires=('T', 'u', 'v'), stage='column', units='K s-1')
+def dtT_advec(T, u, v, ctx):
+    return ctx.advec(T, u, v)   # also available: ctx.mean(), ctx.ddx(), ctx.ddy(), ctx.nearest(), ctx.fc
+```
+
+See `src/ls2d/forcing/fields.py` and `src/ls2d/forcing/column.py` for all built-in quantities.
 
 ## Contributing guidelines
 
@@ -85,3 +126,8 @@ Contributions through pull requests are always appreciated. To keep the code sty
 To ensure consistent formatting, the code should be automatically formatted using [ruff](https://docs.astral.sh/ruff/). It can be installed via pip and can be run on the entire codebase from the project root (this directory) like
 
     ruff format .
+
+Tests (no ERA5 downloads needed, they use synthetic data) can be run with:
+
+    pip install pytest
+    pytest tests

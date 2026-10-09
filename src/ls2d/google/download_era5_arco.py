@@ -33,57 +33,13 @@ import gcsfs
 import ls2d.ecmwf.era_tools as era_tools
 from ls2d.google.arco_tools import get_layout, read_rows
 from ls2d.core.logger import logger
+from ls2d.forcing.pipeline import required_era5_fields
+from ls2d.forcing.raw import fields_to_download, group_by_levtype
+from ls2d.forcing.registry import registry
 
 _bucket = 'gcp-public-data-arco-era5/ar'
 _store_ml = f'{_bucket}/model-level-1h-0p25deg.zarr-v1'
 _store_sl = f'{_bucket}/full_37-1h-0p25deg-chunk-1.zarr-v3'
-
-# ARCO variable name -> output (ECMWF short) name.
-# Model level analysis:
-_vars_ml = {
-    'temperature': 't',
-    'u_component_of_wind': 'u',
-    'v_component_of_wind': 'v',
-    'vertical_velocity': 'w',
-    'specific_humidity': 'q',
-    'specific_cloud_liquid_water_content': 'clwc',
-    'specific_cloud_ice_water_content': 'ciwc',
-    'specific_rain_water_content': 'crwc',
-    'specific_snow_water_content': 'cswc',
-    'ozone_mass_mixing_ratio': 'o3',
-}
-
-# Pressure level analysis:
-_vars_pl = {
-    'geopotential': 'z',
-}
-
-# Surface analysis:
-_vars_sfc = {
-    'surface_pressure': 'sp',
-    'skin_temperature': 'skt',
-    'sea_surface_temperature': 'sst',
-    'instantaneous_surface_sensible_heat_flux': 'ishf',
-    'instantaneous_moisture_flux': 'ie',
-    'forecast_surface_roughness': 'fsr',
-    'forecast_logarithm_of_surface_roughness_for_heat': 'flsr',
-    'soil_type': 'slt',
-    'type_of_low_vegetation': 'tvl',
-    'type_of_high_vegetation': 'tvh',
-    'leaf_area_index_low_vegetation': 'lai_lv',
-    'leaf_area_index_high_vegetation': 'lai_hv',
-    'low_vegetation_cover': 'cvl',
-    'high_vegetation_cover': 'cvh',
-    'soil_temperature_level_1': 'stl1',
-    'soil_temperature_level_2': 'stl2',
-    'soil_temperature_level_3': 'stl3',
-    'soil_temperature_level_4': 'stl4',
-    'volumetric_soil_water_layer_1': 'swvl1',
-    'volumetric_soil_water_layer_2': 'swvl2',
-    'volumetric_soil_water_layer_3': 'swvl3',
-    'volumetric_soil_water_layer_4': 'swvl4',
-}
-
 
 def _open_metadata(store):
     """
@@ -109,7 +65,21 @@ def _clean_attrs(attrs):
     return {k: v for k, v in attrs.items() if not k.startswith('GRIB')}
 
 
-def download_era5_arco(settings, batch_size=512):
+def _arco_fields(fields):
+    """
+    Check that `fields` can be downloaded from ARCO into one file.
+    """
+    missing = [f.key for f in fields if f.arco is None]
+    if missing:
+        raise ValueError(f'ERA5 field(s) {missing} are not available in Google ARCO (no `arco` name in the registry).')
+    names = [f.name for f in fields]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(f'ERA5 fields with the same short name {duplicates} can not be stored in one ARCO file.')
+    return fields
+
+
+def download_era5_arco(settings, batch_size=512, outputs=None, fields=None):
     """
     Download all required ERA5 fields for an experiment between
     `start_date` and `end_date` from the Google ARCO-ERA5 archive.
@@ -128,6 +98,13 @@ def download_era5_arco(settings, batch_size=512):
                 start_date, end_date : datetime objects with start/end of experiment
         batch_size : int
             Number of concurrent HTTP range requests.
+        outputs : list of str, optional
+            LES outputs and/or column variables (see `ls2d.les_outputs()`); only the ERA5
+            fields needed for these are downloaded. Default: all LES outputs.
+        fields : list of `Era5Field`, optional
+            Download exactly these ERA5 fields (overrides `outputs`).
+
+    Existing files that miss one or more of the required fields are downloaded again.
     """
 
     logger.info(f'Downloading ERA5 (Google ARCO) for period: {settings["start_date"]} to {settings["end_date"]}')
@@ -143,15 +120,28 @@ def download_era5_arco(settings, batch_size=512):
     end = era_tools.lower_to_hour(settings['end_date'])
     an_dates = era_tools.get_required_analysis(start, end)
 
+    fields = _arco_fields(required_era5_fields(outputs) if fields is None else fields)
+    candidates = [f for f in registry.era5_fields() if f.arco is not None]
+
     download_dates = []
+    download_fields = []
     for date in an_dates:
         era_dir, era_file = era_tools.era5_file_path(
             date.year, date.month, date.day, settings['era5_path'], settings['case_name'], 'era5_arco'
         )
-        if os.path.isfile(era_file):
+        to_download = fields_to_download(era_file, fields, candidates)
+        if not to_download:
             logger.debug(f'Found {era_file} local')
         else:
+            if os.path.isfile(era_file):
+                logger.info(f'{era_file} misses required field(s), downloading again')
             download_dates.append((date, era_dir, era_file))
+            download_fields += [f for f in to_download if f not in download_fields]
+
+    groups = group_by_levtype(_arco_fields(download_fields))
+    _vars_ml = {f.arco: f.name for f in groups.get('ml', [])}
+    _vars_pl = {f.arco: f.name for f in groups.get('pl', [])}
+    _vars_sfc = {f.arco: f.name for f in groups.get('sfc', [])}
 
     if len(download_dates) == 0:
         logger.info('All required ERA5 files found local, nothing to download')
@@ -195,9 +185,9 @@ def download_era5_arco(settings, batch_size=512):
         lons_out = lons[ilon]
 
     # Variables to read, with their chunk layout.
-    fields = [(_store_ml, name, get_layout(ds_ml, name)) for name in _vars_ml]
-    fields += [(_store_sl, name, get_layout(ds_sl, name)) for name in _vars_pl]
-    fields += [(_store_sl, name, get_layout(ds_sl, name)) for name in _vars_sfc]
+    layouts = [(_store_ml, name, get_layout(ds_ml, name)) for name in _vars_ml]
+    layouts += [(_store_sl, name, get_layout(ds_sl, name)) for name in _vars_pl]
+    layouts += [(_store_sl, name, get_layout(ds_sl, name)) for name in _vars_sfc]
 
     arco_ds = {**{name: ds_ml for name in _vars_ml}, **{name: ds_sl for name in {**_vars_pl, **_vars_sfc}}}
     short_names = {**_vars_ml, **_vars_pl, **_vars_sfc}
@@ -216,17 +206,17 @@ def download_era5_arco(settings, batch_size=512):
             logger.error(msg)
             raise RuntimeError(msg)
 
-        data = {name: np.empty((24, lay['nlev'], nlat, ilon.size), np.float32) for _, name, lay in fields}
+        data = {name: np.empty((24, lay['nlev'], nlat, ilon.size), np.float32) for _, name, lay in layouts}
 
         t_start = time.perf_counter()
         for n, it in enumerate(itimes):
-            rows = read_rows(fs, fields, it, ilat0, nlat, lats.size, lons.size, batch_size)
+            rows = read_rows(fs, layouts, it, ilat0, nlat, lats.size, lons.size, batch_size)
             for name in data:
                 data[name][n] = rows[name][:, :, ilon]
 
         # Create combined dataset and save to NetCDF.
         variables = {}
-        for _, name, _ in fields:
+        for _, name, _ in layouts:
             da = arco_ds[name][name]
             attrs = _clean_attrs(da.attrs)
             if name in _vars_ml:

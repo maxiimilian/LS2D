@@ -20,7 +20,6 @@
 
 # Python modules
 import subprocess as sp
-import datetime
 import sys, os
 import dill as pickle
 import requests
@@ -32,6 +31,9 @@ import numpy as np
 import ls2d.ecmwf.era_tools as era_tools
 from ls2d.core.logger import logger
 from ls2d.ecmwf.patch_cds_ads import patch_netcdf, regrid_netcdf
+from ls2d.forcing.pipeline import required_era5_fields
+from ls2d.forcing.raw import group_by_levtype, fields_to_download
+from ls2d.forcing.registry import registry
 
 # Yikes, but necessary (?) if you want to use
 # MARS downloads without the Python CDS api installed?
@@ -88,20 +90,116 @@ def _retrieve_from_MARS(request, settings, nc_dir, nc_file, qos):
     execute('sbatch {}'.format(slurm_job))
 
 
+# ERA5 level type <-> file type of the downloads.
+ftypes = {'ml': 'model_an', 'pl': 'pressure_an', 'sfc': 'surface_an'}
+levtypes = {v: k for k, v in ftypes.items()}
+
+pressure_levels = [
+    1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300, 350,
+    400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000,
+]  # fmt: skip
+
+
+def _area(settings):
+    """
+    Bounds of domain: north, west, south, east.
+    """
+    size = settings['area_size']
+    lat, lon = settings['central_lat'], settings['central_lon']
+    return lat + size, lon - size, lat - size, lon + size
+
+
+def cds_request(ftype, fields, date, settings):
+    """
+    Build CDS request for one day and file type.
+
+    Returns:
+        (CDS dataset name, request dictionary)
+    """
+    lat_n, lon_w, lat_s, lon_e = _area(settings)
+
+    if ftype in ('pressure_an', 'surface_an'):
+        missing = [f.key for f in fields if f.cds is None]
+        if missing:
+            raise ValueError(f'ERA5 field(s) {missing} have no CDS name in the registry.')
+
+        # Add +/- 1 grid point to pressure and surface files, required for interpolations.
+        pad = 0.25
+        request = {
+            'product_type': 'reanalysis',
+            'format': 'netcdf',
+            'year': '{0:04d}'.format(date.year),
+            'month': '{0:02d}'.format(date.month),
+            'day': '{0:02d}'.format(date.day),
+            'time': ['{0:02d}:00'.format(i) for i in range(24)],
+            'area': [lat_n + pad, lon_w - pad, lat_s - pad, lon_e + pad],
+            'variable': [f.cds for f in fields],
+        }
+
+        if ftype == 'pressure_an':
+            request['pressure_level'] = [str(p) for p in pressure_levels]
+            return 'reanalysis-era5-pressure-levels', request
+        return 'reanalysis-era5-single-levels', request
+
+    elif ftype == 'model_an':
+        # Model level analysis, stored in tape archive, so downloads are VERY slow :-(
+        request = {
+            'class': 'ea',
+            'date': '{0:04d}-{1:02d}-{2:02d}'.format(date.year, date.month, date.day),
+            'expver': '1',
+            'levelist': '/'.join(list(np.arange(1, 138).astype(str))),
+            'levtype': 'ml',
+            'param': '/'.join(f.param for f in fields),
+            'stream': 'oper',
+            'time': '/'.join(['{0:02d}:00:00'.format(i) for i in range(24)]),
+            'type': 'an',
+            'area': '{}/{}/{}/{}'.format(lat_n, lon_w, lat_s, lon_e),
+            'grid': '0.25/0.25',
+            'format': 'netcdf',
+        }
+        return 'reanalysis-era5-complete', request
+
+    raise ValueError(f'Unknown file type "{ftype}"')
+
+
+def mars_request(ftype, fields, date, settings):
+    """
+    Build MARS request for one day and file type.
+    """
+    lat_n, lon_w, lat_s, lon_e = _area(settings)
+
+    request = {
+        'class': 'ea',
+        'expver': '{}'.format(settings['era5_expver']),
+        'stream': 'oper',
+        'date': '{0:04d}-{1:02d}-{2:02d}'.format(date.year, date.month, date.day),
+        'area': '{}/{}/{}/{}'.format(lat_n, lon_w, lat_s, lon_e),
+        'grid': '0.25/0.25',
+        'format': 'netcdf',
+        'levtype': levtypes[ftype],
+        'type': 'an',
+        'time': '0/to/23/by/1',
+        'param': '/'.join(f.param for f in fields),
+    }
+
+    if ftype == 'model_an':
+        request['levelist'] = '1/to/137/by/1'
+    elif ftype == 'pressure_an':
+        request['levelist'] = '/'.join(str(p) for p in pressure_levels)
+
+    return request
+
+
 def _download_era5_file(settings):
     """
-    Download ERA5 analysis or forecasts on surface, model or pressure levels
-    Requested parameters are hardcoded and chosen for the specific use of LS2D
+    Download (CDS) or submit (MARS) the ERA5 analysis on surface, model or pressure levels for one day.
 
     Arguments:
         settings : dictionary
-            Dictionary with keys:
+            LS2D settings, plus keys:
                 date : datetime object with date to download
-                lat, lon : requested latitude and longitude
-                size : download an area of lat+/-size, lon+/-size (degrees)
-                path : absolute or relative path to save the NetCDF data
-                case : case name used in file name of NetCDF files
-                ftype : level/forecast/analysis switch (in: [model_an, model_fc, pressure_an, surface_an])
+                ftype : file type (in: [model_an, pressure_an, surface_an])
+                fields : list of `Era5Field` to download
     """
 
     logger.info(f'Downloading ERA5 ({settings["data_source"]}) for {settings["date"]:%Y-%m-%d} - {settings["ftype"]}')
@@ -128,15 +226,6 @@ def _download_era5_file(settings):
         sys.stdout = open(out_file, 'w')
         sys.stderr = open(err_file, 'w')
 
-    # Bounds of domain
-    lat_n = settings['central_lat'] + settings['area_size']
-    lat_s = settings['central_lat'] - settings['area_size']
-    lon_w = settings['central_lon'] - settings['area_size']
-    lon_e = settings['central_lon'] + settings['area_size']
-
-    # Monitor the required download time
-    start = datetime.datetime.now()
-
     # Switch between CDS and MARS downloads
     if settings['data_source'] == 'CDS':
         # Check if pickle with previous request is available.
@@ -147,22 +236,22 @@ def _download_era5_file(settings):
             logger.info('Found previous CDS request!')
 
             with open(pickle_file, 'rb') as f:
-                cds_request = pickle.load(f)
+                cds_request_obj = pickle.load(f)
 
                 try:
-                    cds_request.update()
+                    cds_request_obj.update()
                 except requests.exceptions.HTTPError:
                     logger.error('CDS request is no longer available online!')
                     msg = 'To continue, delete the previous request: {}'.format(pickle_file)
                     logger.error(msg)
                     raise RuntimeError(msg)
 
-                state = cds_request.reply['state']
+                state = cds_request_obj.reply['state']
 
                 if state == 'completed':
                     logger.info('Request finished, downloading NetCDF file')
 
-                    cds_request.download(nc_file)
+                    cds_request_obj.download(nc_file)
                     f.close()
                     os.remove(pickle_file)
 
@@ -181,207 +270,23 @@ def _download_era5_file(settings):
 
                 else:
                     logger.error('Request failed, status = "{}"'.format(state))
-                    logger.error('Error message = {}'.format(cds_request.reply['error'].get('message')))
-                    logger.error('Error reason = {}'.format(cds_request.reply['error'].get('reason')))
+                    logger.error('Error message = {}'.format(cds_request_obj.reply['error'].get('message')))
+                    logger.error('Error reason = {}'.format(cds_request_obj.reply['error'].get('reason')))
 
         else:
             logger.info('No previous CDS request, submitting new one')
 
-            # Create instance of CDS API
             server = cdsapi.Client(wait_until_complete=False, delete=False)
-
-            # Surface and pressure level analysis, stored on HDs, so downloads are fast :-)
-            if settings['ftype'] == 'pressure_an' or settings['ftype'] == 'surface_an':
-                analysis_times = ['{0:02d}:00'.format(i) for i in range(24)]
-
-                # Add +/- 1 grid point to pressure and surface files, required for interpolations.
-                pad = 0.25
-                area = [lat_n + pad, lon_w - pad, lat_s - pad, lon_e + pad]
-
-                request = {
-                    'product_type': 'reanalysis',
-                    'format': 'netcdf',
-                    'year': '{0:04d}'.format(settings['date'].year),
-                    'month': '{0:02d}'.format(settings['date'].month),
-                    'day': '{0:02d}'.format(settings['date'].day),
-                    'time': analysis_times,
-                    'area': area,
-                }
-
-                if settings['ftype'] == 'pressure_an':
-                    pressure_levels = [
-                        '1',
-                        '2',
-                        '3',
-                        '5',
-                        '7',
-                        '10',
-                        '20',
-                        '30',
-                        '50',
-                        '70',
-                        '100',
-                        '125',
-                        '150',
-                        '175',
-                        '200',
-                        '225',
-                        '250',
-                        '300',
-                        '350',
-                        '400',
-                        '450',
-                        '500',
-                        '550',
-                        '600',
-                        '650',
-                        '700',
-                        '750',
-                        '775',
-                        '800',
-                        '825',
-                        '850',
-                        '875',
-                        '900',
-                        '925',
-                        '950',
-                        '975',
-                        '1000',
-                    ]
-
-                    request.update({'pressure_level': pressure_levels, 'variable': 'geopotential'})
-
-                    cds_request = server.retrieve('reanalysis-era5-pressure-levels', request)
-
-                elif settings['ftype'] == 'surface_an':
-                    request.update(
-                        {
-                            'variable': [
-                                'instantaneous_moisture_flux',
-                                'high_vegetation_cover',
-                                'leaf_area_index_high_vegetation',
-                                'leaf_area_index_low_vegetation',
-                                'low_vegetation_cover',
-                                'sea_surface_temperature',
-                                'skin_temperature',
-                                'soil_temperature_level_1',
-                                'soil_temperature_level_2',
-                                'soil_temperature_level_3',
-                                'soil_temperature_level_4',
-                                'soil_type',
-                                'surface_pressure',
-                                'instantaneous_surface_sensible_heat_flux',
-                                'type_of_high_vegetation',
-                                'type_of_low_vegetation',
-                                'volumetric_soil_water_layer_1',
-                                'volumetric_soil_water_layer_2',
-                                'volumetric_soil_water_layer_3',
-                                'volumetric_soil_water_layer_4',
-                                'forecast_logarithm_of_surface_roughness_for_heat',
-                                'forecast_surface_roughness',
-                            ]
-                        }
-                    )
-
-                    cds_request = server.retrieve('reanalysis-era5-single-levels', request)
-
-            # Model level analysis, stored in tape archive, so downloads are VERY slow :-(
-            elif settings['ftype'] == 'model_an':
-                model_levels = '/'.join(list(np.arange(1, 138).astype(str)))
-                analysis_times = '/'.join(['{0:02d}:00:00'.format(i) for i in range(24)])
-
-                request = {
-                    'class': 'ea',
-                    'date': '{0:04d}-{1:02d}-{2:02d}'.format(
-                        settings['date'].year,
-                        settings['date'].month,
-                        settings['date'].day,
-                    ),
-                    'expver': '1',
-                    'levelist': model_levels,
-                    'levtype': 'ml',
-                    'param': '75/76/130/131/132/133/135/203/246/247',
-                    'stream': 'oper',
-                    'time': analysis_times,
-                    'type': 'an',
-                    'area': '{}/{}/{}/{}'.format(lat_n, lon_w, lat_s, lon_e),
-                    'grid': '0.25/0.25',
-                    'format': 'netcdf',
-                }
-
-                cds_request = server.retrieve('reanalysis-era5-complete', request)
+            dataset, request = cds_request(settings['ftype'], settings['fields'], settings['date'], settings)
+            cds_request_obj = server.retrieve(dataset, request)
 
             # Save pickle for later processing/download
             with open(pickle_file, 'wb') as f:
-                pickle.dump(cds_request, f)
+                pickle.dump(cds_request_obj, f)
 
     elif settings['data_source'] == 'MARS':
-        # Shared set of CDS Python API settings for all download types:
-        request = {
-            'class': 'ea',
-            'expver': '{}'.format(settings['era5_expver']),
-            'stream': 'oper',
-            'date': '{0:04d}-{1:02d}-{2:02d}'.format(
-                settings['date'].year, settings['date'].month, settings['date'].day
-            ),
-            'area': '{}/{}/{}/{}'.format(lat_n, lon_w, lat_s, lon_e),
-            'grid': '0.25/0.25',
-            'format': 'netcdf',
-        }
-
-        # Model levels and time steps to retrieve
-        model_levels = '1/to/137/by/1'
-        press_levels = (
-            '1/2/3/5/7/10/20/30/50/70/100/125/150/175/200/225/250/300/350'
-            '/400/450/500/550/600/650/700/750/775/800/825/850/875/900/925/950/975/1000'
-        )
-
-        an_times = '0/to/23/by/1'
-
-        # Update request based on level/analysis/forecast:
-        if settings['ftype'] == 'model_an':
-            qos = 'nf'
-            request.update(
-                {
-                    'levtype': 'ml',
-                    'type': 'an',
-                    'levelist': model_levels,
-                    'time': an_times,
-                    'param': '75/76/129/130/131/132/133/135/152/246/247/248/203',
-                }
-            )
-
-        elif settings['ftype'] == 'pressure_an':
-            qos = 'nf'
-            request.update(
-                {
-                    'levtype': 'pl',
-                    'type': 'an',
-                    'levelist': press_levels,
-                    'time': an_times,
-                    'param': '129.128',
-                }
-            )
-
-        elif settings['ftype'] == 'surface_an':
-            qos = 'nf'
-            request.update(
-                {
-                    'levtype': 'sfc',
-                    'type': 'an',
-                    'time': an_times,
-                    'param': (
-                        '15.128/16.128/17.128/18.128/27.128/28.128/29.128/30.128/34.128/35.128/36.128/37.128/'
-                        '38.128/39.128/40.128/41.128/42.128/43.128/66.128/67.128/74.128/78.128/79.128/89.228/'
-                        '90.228/129.128/134.128/136.128/137.128/139.128/151.128/160.128/161.128/162.128/163.128/'
-                        '164.128/165.128/166.128/167.128/168.128/170.128/172.128/183.128/186.128/187.128/188.128/'
-                        '198.128/229.128/230.128/231.128/232.128/235.128/236.128/243.128/244.128/245.128'
-                    ),
-                }
-            )
-
-        # Submit download to SLURM:
-        _retrieve_from_MARS(request, settings, nc_dir, nc_file, qos)
+        request = mars_request(settings['ftype'], settings['fields'], settings['date'], settings)
+        _retrieve_from_MARS(request, settings, nc_dir, nc_file, qos='nf')
 
     # Restore printing to screen
     if settings['write_log']:
@@ -391,88 +296,80 @@ def _download_era5_file(settings):
     return finished
 
 
-def download_era5(settings, exit_when_waiting=True):
+def download_era5(settings, exit_when_waiting=True, outputs=None, fields=None):
     """
-    Download all required ERA5 fields for an experiment
-    between `starttime` and `endtime`
+    Download the ERA5 fields required for an experiment between `start_date` and `end_date`,
+    as 24 hour blocks (00 UTC to (including) 23 UTC).
 
-    Analysis and forecasts are downloaded as 24 hour blocks:
-        Analysis: 00 UTC to (including) 23 UTC
-        Forecast: 06 UTC to (including) 05 UTC next day
+    Only the ERA5 fields needed for `outputs` are downloaded. Existing files that miss
+    one or more of the required fields are downloaded again.
 
     Arguments:
-        start : datetime object
-            Start date+time of experiment
-        end : datetime object
-            End date+time of experiment
-        lat, lon : float
-            Requested center latitude and longitude
-        size : float
-            Download an area of lat+/-size, lon+/-size degrees
-        path : string
-            Directory to save files
-        case : string
-            Case name used in file name of NetCDF files
+        settings : dict
+            Dictionary with keys `central_lat`, `central_lon`, `area_size`, `era5_path`, `case_name`,
+            `start_date`, `end_date`, `data_source` ('CDS', 'MARS', or 'ARCO'), `write_log`,
+            and `era5_expver` (MARS only).
+        exit_when_waiting : bool
+            Exit Python if CDS requests are not finished yet.
+        outputs : list of str, optional
+            LES outputs and/or column variables (see `ls2d.les_outputs()`). Default: all LES outputs.
+        fields : list of `Era5Field`, optional
+            Download exactly these ERA5 fields (overrides `outputs`).
     """
+
+    if settings['data_source'] == 'ARCO':
+        from ls2d.google.download_era5_arco import download_era5_arco
+
+        return download_era5_arco(settings, outputs=outputs, fields=fields)
 
     logger.info(f'Downloading ERA5 ({settings["data_source"]}) for period: {settings["start_date"]} to {settings["end_date"]}')
 
-    # Check if output directory exists, and ends with '/'
+    # Check if output directory exists.
     if not os.path.isdir(settings['era5_path']):
         msg = 'Output directory "{}" does not exist!'.format(settings['era5_path'])
         logger.error(msg)
         raise FileNotFoundError(msg)
-    if settings['era5_path'][-1] != '/':
-        settings['era5_path'] += '/'
 
-    if cdsapi is None:
+    if settings['data_source'] == 'CDS' and cdsapi is None:
         msg = 'CDS API is not installed. See: https://cds.climate.copernicus.eu/how-to-api'
         logger.error(msg)
         raise ImportError(msg)
+
+    fields = required_era5_fields(outputs) if fields is None else fields
 
     # Round date/time to full hours
     start = era_tools.lower_to_hour(settings['start_date'])
     end = era_tools.lower_to_hour(settings['end_date'])
 
-    # Get list of required forecast and analysis times
+    # Get list of required analysis times
     an_dates = era_tools.get_required_analysis(start, end)
-    fc_dates = era_tools.get_required_forecast(start, end)
-
-    # Base dictionary to pass to download function. In Python >3.3, multiprocessings Pool() can accept
-    # multiple arguments. For now, keep it generic for older versions by passing all arguments inside a dict.
-    download_settings = settings.copy()
-    download_queue = []
 
     # Option to exclude download types.
-    if 'blacklist_download' in settings:
-        blacklist = settings['blacklist_download']
-    else:
-        blacklist = []
+    blacklist = settings.get('blacklist_download', [])
 
     # Loop over all required files, check if there is a local version, if not add to download queue
-    # Analysis files:
+    download_queue = []
     for date in an_dates:
-        for ftype in ['model_an', 'pressure_an', 'surface_an']:
-            if ftype not in blacklist:
-                era_dir, era_file = era_tools.era5_file_path(
-                    date.year,
-                    date.month,
-                    date.day,
-                    settings['era5_path'],
-                    settings['case_name'],
-                    ftype,
-                )
+        for levtype, flds in group_by_levtype(fields).items():
+            ftype = ftypes[levtype]
+            if ftype in blacklist:
+                continue
 
-                if not os.path.exists(era_dir):
-                    logger.debug('Creating output directory {}'.format(era_dir))
-                    os.makedirs(era_dir)
+            era_dir, era_file = era_tools.era5_file_path(
+                date.year, date.month, date.day, settings['era5_path'], settings['case_name'], ftype
+            )
 
+            if not os.path.exists(era_dir):
+                logger.debug('Creating output directory {}'.format(era_dir))
+                os.makedirs(era_dir)
+
+            to_download = fields_to_download(era_file, flds, registry.era5_fields(levtype))
+            if not to_download:
+                logger.debug('Found {} - {} local'.format(date, ftype))
+            else:
                 if os.path.isfile(era_file):
-                    logger.debug('Found {} - {} local'.format(date, ftype))
-                else:
-                    settings_tmp = download_settings.copy()
-                    settings_tmp.update({'date': date, 'ftype': ftype})
-                    download_queue.append(settings_tmp)
+                    logger.info(f'{era_file} misses required field(s), downloading again')
+                download_queue.append(dict(settings, date=date, ftype=ftype, fields=to_download))
 
     finished = True
     for req in download_queue:

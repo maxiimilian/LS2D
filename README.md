@@ -89,6 +89,32 @@ les_input = ls2d.get_les_input(column, z, outputs=outputs)      # interpolated t
 
 `outputs` selects the LES variables (default: all that the source can provide, `ls2d.era5.default_outputs()`). Pass the same list to every step. `ls2d.download()` and `ls2d.read()` do the same for any data source, selected with `settings['source']` (default `'era5'`). The old interface (`era = ls2d.Read_era5(settings)`, `era.calculate_forcings()`, `era.get_les_input(z)`) still works, and is a thin wrapper around these functions.
 
+### GFS forecasts
+
+Besides ERA5, (LS)<sup>2</sup>D can use NOAA GFS 0.25° forecasts, from the public archive on AWS (or its Google Cloud mirror); no account is needed. Install with `pip install ls2d[gfs]` (GRIB decoding with `eccodes`). The processing and the LES input are the same as for ERA5:
+
+```python
+settings = {
+    'source': 'gfs',
+    'central_lat': 51.97, 'central_lon': 4.93, 'area_size': 1, 'case_name': 'cabauw',
+    'gfs_path': '/path/to/gfs/data',
+    'gfs_cycle': datetime(2026, 10, 8, 0),    # optional, default: last cycle at or before `start_date`
+    'start_date': datetime(2026, 10, 8, 6),   # valid times; hourly output up to +120 h, 3-hourly up to +384 h
+    'end_date': datetime(2026, 10, 9, 6),
+}
+ls2d.download(settings)
+column = ls2d.calculate_forcings(ls2d.read(settings), n_av=1)
+les_input = ls2d.get_les_input(column, z)
+```
+
+Only the GRIB messages of the required fields are downloaded (HTTP byte ranges, ~300 MB and ~10 s per forecast hour), and saved cropped to the domain as one small NetCDF file per forecast hour. Differences with ERA5 to be aware of:
+
+- The GFS atmosphere is only available on 41 pressure levels; it is interpolated to terrain-following levels (`p = sigma * ps`), ignoring levels below the surface, with the 2 m temperature/humidity and 10 m wind at the surface. The vertical resolution is that of the pressure levels (25 hPa near the surface).
+- Surface fluxes in the GFS files are averages since the start of a 6 h window; (LS)<sup>2</sup>D converts them to the mean over the last output interval, valid at the end of the interval (ERA5: instantaneous). The analysis (+0 h) has no fluxes; the first interval mean is used.
+- Land surface: Noah soil layers (0-0.1, 0.1-0.4, 0.4-1, 1-2 m) for `t_soil` and `theta_soil`; no HTESSEL vegetation/soil types, root fractions, vegetation cover, LAI, or `z0h`. SST is the surface temperature over water (undefined over land, as in ERA5).
+
+See `examples/example_gfs.py`.
+
 ### Adding variables
 
 Everything that (LS)<sup>2</sup>D downloads and computes is defined in registries (see `src/ls2d/forcing/`). Each quantity declares what it requires, and the registry works out what to download and in which order to compute things. Adding e.g. the 2 m temperature from ERA5 to the download, processing, and LES input:

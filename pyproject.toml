@@ -45,6 +45,7 @@ requires-python = ">=3.6"
 
 [project.optional-dependencies]
 cds = ["cdsapi"]
+gfs = ["eccodes"]
 
 [project.urls]
 Homepage = "https://github.com/LS2D/LS2D"

@@ -327,3 +327,18 @@ Goal: adding e.g. GFS gives the same LES input definition, without touching the 
 - The ERA5 constants moved from `IFS_tools` to `forcing/constants.py` (same values); ERA5 output is unchanged (1e-10).
 - While adding this, a bug in the synthetic test data was found (geopotential gradient constant with height, so
   `ug`/`vg` were not really tested); fixed, and the golden files regenerated with the pre-refactor code.
+
+## 9. GFS source
+
+`ls2d.sources.gfs` + `ls2d.noaa` (download/read): NOAA GFS 0.25 degree forecasts from the public archive
+on AWS (`noaa-gfs-bdp-pds`) or its Google Cloud mirror.
+
+- Download: `.idx` inventories -> only the GRIB messages of the required fields (HTTP byte ranges, merged,
+  parallel download + eccodes decoding, ~10 s per forecast hour), cropped to the domain, one NetCDF per hour
+  (`gfs_path/case/gfs/yyyymmddhh/gfs.fXXX.nc`). Files missing fields are downloaded again (keeping existing fields).
+- Recipes: pressure levels -> terrain-following levels (2 m / 10 m values at the surface), condensate (5 species,
+  zero above 50 hPa), upward fluxes, Noah soil, SST from skin temperature over water.
+- Fluxes are window averages in GFS; the reader converts them to interval means (the hour before the first
+  output time is downloaded for that, fluxes only).
+- Tests: offline with a synthetic GRIB2 archive (`tests/synthetic_gfs.py`, real GRIB messages via eccodes, fake
+  `fetch`); live test with `LS2D_LIVE=1`. Checked manually against real GFS data, and against ERA5 (ARCO).

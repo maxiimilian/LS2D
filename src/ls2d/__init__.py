@@ -58,6 +58,8 @@ from ls2d.forcing import (
 
 # Built-in sources.
 from ls2d.sources.era5 import era5
+from ls2d.sources.gfs import gfs
+from ls2d.noaa import download_gfs, read_gfs
 
 era5_field = era5.field
 

@@ -68,40 +68,54 @@ def half_levels_from_full(p, ps, p_top_min=0.34):
     return xr.DataArray(ph, dims=dims, coords=coords)
 
 
-def _to_sigma_column(p_target, p_levels, values, ps):
+def _to_sigma_column(p_target, p_levels, values, ps, surface=np.nan):
     """
     Interpolate one column in ln(p) from the pressure levels above the surface to `p_target`.
-    Linear extrapolation below the lowest level above the surface.
+    If `surface` is given (finite), it is used as value at `p = ps`. Otherwise, values below the
+    lowest pressure level above the surface are extrapolated linearly.
     """
-    valid = p_levels <= ps
-    if valid.sum() < 2:
+    valid = (p_levels < ps) & np.isfinite(values)
+    xp, fp = p_levels[valid], values[valid]
+    if np.isfinite(surface):
+        xp, fp = np.append(xp, ps), np.append(fp, surface)
+    if xp.size < 2:
         raise ValueError(f'Less than two pressure levels above the surface (ps = {ps:.0f} Pa)')
-    return interp_extrap(np.log(p_target), np.log(p_levels[valid]), values[valid])
+    return interp_extrap(np.log(p_target), np.log(xp), fp)
 
 
-def to_terrain_following(da, ps, sigma):
+def to_terrain_following(da, ps, sigma, surface=None, min_value=None):
     """
     Convert pressure level data to terrain-following levels `p = sigma * ps`.
 
-    Pressure levels below the surface (`pressure_level > ps`) are ignored; values between the
-    lowest pressure level above the surface and the surface are extrapolated linearly in ln(p).
+    Pressure levels below the surface (`pressure_level >= ps`) are ignored. Between the lowest
+    pressure level above the surface and the surface, values are interpolated (in ln(p)) to the
+    `surface` value at `p = ps` (e.g. the 2 m temperature) if given, otherwise extrapolated linearly.
 
     Arguments:
         da : xarray.DataArray
             Data with dims (time, pressure_level, latitude, longitude), `pressure_level` in Pa.
+            NaN values (e.g. levels where a variable is not available) are ignored.
         ps : xarray.DataArray
             Surface pressure (time, latitude, longitude) in Pa.
         sigma : array
             Target levels as fraction of the surface pressure, from surface (1) to top.
+        surface : xarray.DataArray, optional
+            Values at the surface (time, latitude, longitude).
+        min_value : float, optional
+            Lower limit, e.g. 0 for mixing ratios (extrapolation can give negative values).
 
     Returns:
         xarray.DataArray with dims (time, level, latitude, longitude).
     """
     sigma = xr.DataArray(np.asarray(sigma, dtype=float), dims='level')
     p_target = sigma * ps
+    if surface is None:
+        surface = xr.full_like(ps, np.nan, dtype=float)
     out = xr.apply_ufunc(
-        _to_sigma_column, p_target, da.pressure_level, da, ps,
-        input_core_dims=[['level'], ['pressure_level'], ['pressure_level'], []],
+        _to_sigma_column, p_target, da.pressure_level, da, ps, surface,
+        input_core_dims=[['level'], ['pressure_level'], ['pressure_level'], [], []],
         output_core_dims=[['level']], vectorize=True,
     )  # fmt: skip
+    if min_value is not None:
+        out = out.clip(min=min_value)
     return out.transpose('time', 'level', 'latitude', 'longitude')

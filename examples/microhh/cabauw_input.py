@@ -2,7 +2,8 @@
 # This file is part of LS2D.
 #
 # Copyright (c) 2017-2024 Wageningen University & Research
-# Author: Bart van Stratum (WUR)
+# Original author: Bart van Stratum (WUR)
+# Additional authors (refactoring): Maximilian Pierzyna, Claude (Anthropic)
 #
 # LS2D is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

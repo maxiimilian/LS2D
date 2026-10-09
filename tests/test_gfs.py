@@ -195,4 +195,5 @@ def test_live_gfs(tmp_path):
     les = ls2d.get_les_input(ls2d.calculate_forcings(ls2d.read(settings), n_av=1), z)
     assert 270 < float(les.thl.isel(z=0).mean()) < 310
     for v in les.data_vars:
-        assert np.isfinite(les[v]).all(), v
+        if v != 'sst':  # Cabauw: land only, SST undefined.
+            assert np.isfinite(les[v]).all(), v

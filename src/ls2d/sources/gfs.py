@@ -2,7 +2,6 @@
 # This file is part of LS2D.
 #
 # Copyright (c) 2017-2026 Wageningen University & Research
-# Authors: Maximilian Pierzyna (TU Delft), Claude (Anthropic)
 #
 # LS2D is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

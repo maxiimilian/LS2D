@@ -18,22 +18,6 @@
 # along with LS2D.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-from .registry import Registry, Field, SimpleField, Quantity, core, quantity
-from .context import Context, Domain
-from .standard import STANDARD, StandardVar
-
-# Populate the core registry with the source-agnostic quantities.
-from . import derived as _derived, column as _column  # noqa: F401
-
-from .les import LesVar, les_output, les_outputs, get_les_input
-from .source import Source, register_source, get_source, sources
-from .pipeline import (
-    column_names,
-    required_fields,
-    required_era5_fields,
-    default_outputs,
-    download,
-    read,
-    compute_fields,
-    calculate_forcings,
-)
+"""
+Built-in data sources. Each module registers one `ls2d.forcing.source.Source`.
+"""

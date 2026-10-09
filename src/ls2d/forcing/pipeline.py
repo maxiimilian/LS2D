@@ -21,13 +21,14 @@
 """
 Stateless pipeline:
 
-    fields = required_era5_fields(outputs)           # which ERA5 fields to download/read
-    raw    = read_era5(settings, outputs)             # raw ERA5 dataset (see `ls2d.forcing.raw`)
-    column = calculate_forcings(raw, n_av, method)    # column dataset (time, level)
-    les    = get_les_input(column, z)                 # LES/SCM input on height grid `z`
+    fields = required_fields(outputs, source)             # which raw fields to download/read
+    raw    = read(settings, outputs)                       # raw dataset (see `ls2d.forcing.raw`)
+    column = calculate_forcings(raw, n_av, method)         # column dataset (time, level)
+    les    = get_les_input(column, z)                      # LES/SCM input on height grid `z`
 
 `outputs` can contain LES output names (see `les_outputs()`) and/or column variable
-names (see `registry.column_names()`). Default: all LES outputs.
+names. Default: all LES outputs the source can provide. The source of a raw dataset
+is given by its attribute `ls2d_source`.
 """
 
 # Third party modules
@@ -37,58 +38,78 @@ import xarray as xr
 import ls2d.core.spatial_tools as spatial
 from ls2d.core.logger import logger
 from ls2d.forcing.context import Context, Domain, format_latlon
-from ls2d.forcing.les import les_outputs, les_sources
-from ls2d.forcing.registry import registry as default_registry
+from ls2d.forcing.source import get_source
 
 
-def column_names(outputs=None, registry=default_registry):
+def _source(source, raw=None):
+    if source is None:
+        source = raw.attrs.get('ls2d_source', 'era5') if raw is not None else 'era5'
+    return get_source(source)
+
+
+def column_names(outputs=None, source='era5'):
     """
     Column variables needed for `outputs` (LES output and/or column variable names).
     """
-    if outputs is None:
-        return les_sources()
-
-    available = set(registry.column_names())
-    names = []
-    for o in outputs:
-        if o in les_outputs():
-            names.extend(les_sources([o]))
-        elif o in available:
-            names.append(o)
-        elif o in registry:
-            raise ValueError(
-                f'"{o}" is a field quantity or ERA5 field without `reduce`; it can not be used as column output.'
-            )
-        else:
-            raise KeyError(registry._unknown(o))
-    return list(dict.fromkeys(names))
+    return _source(source).column_names(outputs)
 
 
-def required_era5_fields(outputs=None, registry=default_registry):
+def required_fields(outputs=None, source='era5'):
     """
-    ERA5 fields needed to compute `outputs` (default: all LES outputs).
+    Raw fields of `source` needed to compute `outputs` (default: all LES outputs the source can provide).
     """
-    return registry.required_era5_fields(column_names(outputs, registry))
+    return _source(source).required_fields(outputs)
+
+
+def required_era5_fields(outputs=None):
+    """
+    ERA5 fields needed to compute `outputs`.
+    """
+    return required_fields(outputs, 'era5')
+
+
+def default_outputs(source='era5'):
+    """
+    All LES outputs `source` can provide.
+    """
+    return _source(source).default_outputs()
+
+
+def download(settings, outputs=None, fields=None, **kwargs):
+    """
+    Download the raw fields for `outputs` from source `settings['source']` (default 'era5').
+    """
+    return _source(settings.get('source', 'era5')).download(settings, outputs=outputs, fields=fields, **kwargs)
+
+
+def read(settings, outputs=None, fields=None):
+    """
+    Read the raw fields for `outputs` from source `settings['source']` (default 'era5').
+    """
+    return _source(settings.get('source', 'era5')).read(settings, outputs=outputs, fields=fields)
 
 
 def _inputs(ds):
     return {name: ds[name] for name in ds.data_vars}
 
 
-def compute_fields(raw, names=None, registry=default_registry):
+def compute_fields(raw, names=None, source=None):
     """
     Compute field quantities on the full 3D grid.
 
     Arguments:
         raw : xarray.Dataset
-            Raw ERA5 dataset, from e.g. `ls2d.read_era5()`.
+            Raw dataset, from e.g. `ls2d.read()`.
         names : list of str, optional
             Field quantities to compute. Default: all field quantities that
             can be computed from the fields in `raw`.
+        source : str or Source, optional
+            Default: attribute `ls2d_source` of `raw`.
 
     Returns:
         xarray.Dataset with the field quantities.
     """
+    registry = _source(source, raw).registry
     inputs = _inputs(raw)
     if names is None:
         names = [q.name for q in registry.quantities('field') if registry.can_resolve(q.name, inputs)]
@@ -103,13 +124,13 @@ def compute_fields(raw, names=None, registry=default_registry):
     return ds
 
 
-def calculate_forcings(raw, n_av=0, method='2nd', outputs=None, registry=default_registry):
+def calculate_forcings(raw, n_av=0, method='2nd', outputs=None, source=None):
     """
     Calculate the large-scale forcings and the (area averaged) column profiles.
 
     Arguments:
         raw : xarray.Dataset
-            Raw ERA5 dataset (from `ls2d.read_era5()`), or a dataset with already computed
+            Raw dataset (from `ls2d.read()`), or a dataset with already computed
             field quantities (from `ls2d.compute_fields()`). Attributes `central_lat` and
             `central_lon` define the location of the column.
         n_av : int
@@ -117,7 +138,9 @@ def calculate_forcings(raw, n_av=0, method='2nd', outputs=None, registry=default
         method : str
             '2nd' or '4th' order horizontal gradients.
         outputs : list of str, optional
-            LES outputs and/or column variables to compute. Default: all LES outputs.
+            LES outputs and/or column variables to compute. Default: all LES outputs the source can provide.
+        source : str or Source, optional
+            Default: attribute `ls2d_source` of `raw`.
 
     Returns:
         xarray.Dataset with the column variables, dims (time, [level | level_half | soil_layer]).
@@ -125,7 +148,9 @@ def calculate_forcings(raw, n_av=0, method='2nd', outputs=None, registry=default
 
     logger.info('Calculating large-scale forcings')
 
-    names = column_names(outputs, registry)
+    src = _source(source, raw)
+    registry = src.registry
+    names = src.column_names(outputs)
     clat, clon = raw.attrs['central_lat'], raw.attrs['central_lon']
 
     domain = Domain.from_grid(raw.latitude.values, raw.longitude.values, clat, clon, n_av, method)
@@ -164,5 +189,6 @@ def calculate_forcings(raw, n_av=0, method='2nd', outputs=None, registry=default
             'fc': ctx.fc,
             'area': domain.area,
             'source': raw.attrs.get('source', 'unknown'),
+            'ls2d_source': src.name,
         },
     )

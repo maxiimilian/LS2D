@@ -259,18 +259,23 @@ Building on `main` instead risks a large conflict with that branch when it lands
 
 ## 7. Implementation notes
 
-Layout as implemented:
+Layout as implemented (after the source abstraction, section 8):
 
 ```
 src/ls2d/forcing/
-  registry.py     Era5Field, Quantity, Registry (resolve / evaluate), default `registry`
-  era5_fields.py  ERA5 catalogue (shared by CDS, MARS and ARCO, hence not in `ecmwf/`)
-  context.py      Context (settings + operators) and Domain (averaging area + halo)
-  fields.py       field quantities (pointwise on the ERA5 grid)
+  registry.py     Field, Quantity, Registry (parent fallback, resolve / evaluate), `core` registry
+  standard.py     the standard quantities: contract between sources and core
+  constants.py    physical constants of the core
+  derived.py      source-agnostic field quantities (Tv, thl, qt, z, zh, w, h2o, ..., p <-> ph fallbacks)
   column.py       column quantities (advection, geostrophic wind, Coriolis, Th)
+  vertical.py     vertical helpers (pressure levels -> terrain-following, half levels)
   les.py          LES output table, get_les_input()
+  context.py      Context (settings + operators) and Domain (averaging area + halo)
+  source.py       Source, register_source(), get_source()
   raw.py          raw dataset conventions, shared by the readers
-  pipeline.py     required_era5_fields(), compute_fields(), calculate_forcings()
+  pipeline.py     required_fields(), download(), read(), compute_fields(), calculate_forcings()
+src/ls2d/sources/
+  era5.py         ERA5 source: Era5Field, catalogue (CDS/MARS/ARCO names), ERA5 recipes
 ```
 
 Differences from the plan above:
@@ -299,3 +304,26 @@ Verification (`pytest tests`, synthetic ERA5 in the real file layouts, no downlo
 `Read_era5` wrapper reproduce the pre-refactor output (`tests/data/golden_*.nc`, from `tests/make_golden.py`) to
 1e-10 for 2nd and 4th order and for a 3×3 domain, except the two deliberate physics changes; the ARCO path matches to
 float32 precision. Requests are checked against the old hard-coded CDS lists.
+
+## 8. Source abstraction (follow-up)
+
+Goal: adding e.g. GFS gives the same LES input definition, without touching the core.
+
+- **`Source`** (`forcing/source.py`): name, raw field class, `download()`/`read()`, and a registry whose
+  parent is the `core` registry. A source registers its raw fields and the recipes for the standard quantities;
+  names it does not define come from the core, and it can override core quantities. `ls2d.read()` /
+  `ls2d.download()` dispatch on `settings['source']`; `calculate_forcings()` on the raw dataset's `ls2d_source`.
+- **Standard** (`forcing/standard.py`): sources provide `T`, `qv`, `ql`, `u`, `v`, `omega`, `p` or `ph`, `phi_p`,
+  `ps`, `ts`, `wth`, `wq` (+ optional ozone, roughness, soil, land surface). The core derives `Tv`, `zh`, `z`, `exn`,
+  `thl`, `qt`, `rho`, `w`, `h2o`, `rhos`. Registering a standard quantity with other units is an error; computed
+  values must have the standard dims (checked in `Registry.evaluate`). `Source.validate()` lists what is missing.
+- **Core fallbacks**: `p` from `ph` and `ph` from (`p`, `ps`); `ls2d.forcing.vertical.to_terrain_following()` converts
+  pressure level data to `p = sigma * ps` levels, ignoring levels below the surface.
+- **Scheme-specific outputs**: HTESSEL types and root fractions are tagged (`land_surface_scheme='HTESSEL'`); a source
+  without them simply does not provide those outputs (`Source.default_outputs()`).
+- **Proof** (`tests/test_sources.py`): `tests/synthetic_plev.py` is a GFS-like source (pressure levels only, one
+  condensate species, upward fluxes in W m-2, no hybrid levels, no HTESSEL). It gives the same variables, dims, units,
+  and attributes as ERA5, and values within 2% of the field maximum (37 pressure levels vs. 137 model levels).
+- The ERA5 constants moved from `IFS_tools` to `forcing/constants.py` (same values); ERA5 output is unchanged (1e-10).
+- While adding this, a bug in the synthetic test data was found (geopotential gradient constant with height, so
+  `ug`/`vg` were not really tested); fixed, and the golden files regenerated with the pre-refactor code.

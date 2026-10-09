@@ -117,8 +117,9 @@ def _fields(date):
 
     # Pressure level geopotential: standard atmosphere tilted horizontally (-> geostrophic wind).
     p_pl = PRESSURE_LEVELS[None, :, None, None] * 100.0
-    zref = np.interp(np.log(PRESSURE_LEVELS * 100.0), np.log(ifs.pf), ifs.gpa)[None, :, None, None]
-    tilt = 1 + zref / 8000.0
+    # `np.interp` needs increasing x: reference profiles from top (low p) to bottom.
+    zref = np.interp(np.log(PRESSURE_LEVELS * 100.0), np.log(ifs.pf[::-1]), ifs.gpa[::-1])[None, :, None, None]
+    tilt = 1 + zref / 20000.0
     z = (zref + tilt * (-15.0 * y + 8.0 * x + 2.0 * x * y + 3.0 * diurnal)) * ifs.grav
     f['z_pl'] = np.broadcast_to(z, (nt, PRESSURE_LEVELS.size, lat.size, lon.size)).astype(np.float64)
     del p_pl

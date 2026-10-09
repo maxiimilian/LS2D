@@ -34,19 +34,32 @@ from ls2d.column import create_column_input
 from ls2d.ecmwf import Read_era5, read_era5
 
 # Stateless, registry based pipeline:
-#   ls2d.read_era5() -> ls2d.calculate_forcings() -> ls2d.get_les_input()
+#   ls2d.read() -> ls2d.calculate_forcings() -> ls2d.get_les_input()
 from ls2d.forcing import (
-    registry,
-    era5_field,
+    core,
     quantity,
     les_output,
     les_outputs,
+    Source,
+    register_source,
+    get_source,
+    sources,
     column_names,
+    required_fields,
     required_era5_fields,
+    default_outputs,
+    download,
+    read,
     compute_fields,
     calculate_forcings,
     get_les_input,
 )
+
+# Built-in sources.
+from ls2d.sources.era5 import era5
+
+era5_field = era5.field
+
 from ls2d.ecmwf import Read_cams
 
 from ls2d.core import grid

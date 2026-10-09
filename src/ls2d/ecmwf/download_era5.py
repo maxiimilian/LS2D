@@ -31,9 +31,8 @@ import numpy as np
 import ls2d.ecmwf.era_tools as era_tools
 from ls2d.core.logger import logger
 from ls2d.ecmwf.patch_cds_ads import patch_netcdf, regrid_netcdf
-from ls2d.forcing.pipeline import required_era5_fields
 from ls2d.forcing.raw import group_by_levtype, fields_to_download
-from ls2d.forcing.registry import registry
+from ls2d.forcing.source import get_source
 
 # Yikes, but necessary (?) if you want to use
 # MARS downloads without the Python CDS api installed?
@@ -335,7 +334,8 @@ def download_era5(settings, exit_when_waiting=True, outputs=None, fields=None):
         logger.error(msg)
         raise ImportError(msg)
 
-    fields = required_era5_fields(outputs) if fields is None else fields
+    era5 = get_source('era5')
+    fields = era5.required_fields(outputs) if fields is None else fields
 
     # Round date/time to full hours
     start = era_tools.lower_to_hour(settings['start_date'])
@@ -363,7 +363,7 @@ def download_era5(settings, exit_when_waiting=True, outputs=None, fields=None):
                 logger.debug('Creating output directory {}'.format(era_dir))
                 os.makedirs(era_dir)
 
-            to_download = fields_to_download(era_file, flds, registry.era5_fields(levtype))
+            to_download = fields_to_download(era_file, flds, era5.registry.fields(levtype))
             if not to_download:
                 logger.debug('Found {} - {} local'.format(date, ftype))
             else:

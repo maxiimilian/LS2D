@@ -28,7 +28,8 @@ import xarray as xr
 from ls2d.core.logger import logger
 import ls2d.ecmwf.era_tools as era_tools
 from ls2d.ecmwf.patch_cds_ads import patch_netcdf
-from ls2d.forcing.pipeline import required_era5_fields, calculate_forcings
+from ls2d.forcing.pipeline import calculate_forcings
+from ls2d.forcing.source import get_source
 from ls2d.forcing.les import get_les_input, les_outputs
 from ls2d.forcing.raw import standardize, missing_fields, group_by_levtype
 
@@ -96,7 +97,7 @@ def read_era5(settings, outputs=None, fields=None):
 
         return read_era5_arco_raw(settings, outputs, fields)
 
-    fields = required_era5_fields(outputs) if fields is None else fields
+    fields = get_source('era5').required_fields(outputs) if fields is None else fields
 
     start = era_tools.lower_to_hour(settings['start_date'])
     end = era_tools.lower_to_hour(settings['end_date'])
@@ -118,6 +119,7 @@ def read_era5(settings, outputs=None, fields=None):
         central_lat=settings['central_lat'],
         central_lon=settings['central_lon'],
         source=f'ERA5 ({settings.get("data_source", "CDS")})',
+        ls2d_source='era5',
     )
     return standardize(datasets, fields, attrs, pressure_level_dim='level').load()
 

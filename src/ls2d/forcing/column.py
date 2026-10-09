@@ -32,19 +32,7 @@ import xarray as xr
 
 # LS2D modules
 from ls2d.forcing.registry import quantity
-
-
-def interp_extrap(x, xp, fp):
-    """
-    Linear interpolation, with linear extrapolation outside `xp`.
-    """
-    i = np.argsort(xp)
-    xp, fp = xp[i], fp[i]
-    y = np.interp(x, xp, fp)
-    lo, hi = x < xp[0], x > xp[-1]
-    y[lo] = fp[0] + (x[lo] - xp[0]) * (fp[1] - fp[0]) / (xp[1] - xp[0])
-    y[hi] = fp[-1] + (x[hi] - xp[-1]) * (fp[-1] - fp[-2]) / (xp[-1] - xp[-2])
-    return y
+from ls2d.forcing.vertical import interp_extrap
 
 
 def pressure_to_model_levels(da, p):

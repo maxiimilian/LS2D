@@ -1,13 +1,13 @@
 import pytest
 
 import ls2d
-from ls2d.forcing.registry import Registry
+from ls2d.forcing.registry import Registry, SimpleField
 
 
 def make_registry():
     reg = Registry()
-    reg.era5_field('a', 'sfc', '1.128', cds='a')
-    reg.era5_field('b', 'ml', '2')
+    reg.add_field(SimpleField('a', 'sfc'))
+    reg.add_field(SimpleField('b', 'ml'))
 
     @reg.quantity('x', requires=('sfc:a',), reduce='mean')
     def x(a, ctx):
@@ -27,12 +27,12 @@ def test_resolve_order():
     assert order.index('ml:b') < order.index('y')
 
 
-def test_required_era5_fields():
+def test_required_fields():
     reg = make_registry()
-    assert [f.key for f in reg.required_era5_fields(['x'])] == ['sfc:a']
-    assert {f.key for f in reg.required_era5_fields(['y'])} == {'sfc:a', 'ml:b'}
+    assert [f.key for f in reg.required_fields(['x'])] == ['sfc:a']
+    assert {f.key for f in reg.required_fields(['y'])} == {'sfc:a', 'ml:b'}
     # Already available quantities are not followed.
-    assert [f.key for f in reg.required_era5_fields(['y'], available={'x'})] == ['ml:b']
+    assert [f.key for f in reg.required_fields(['y'], available={'x'})] == ['ml:b']
 
 
 def test_unknown_name_suggests():
@@ -59,7 +59,7 @@ def test_cycle_detection():
 def test_duplicate_registration():
     reg = make_registry()
     with pytest.raises(KeyError, match='already registered'):
-        reg.era5_field('a', 'sfc', '1.128')
+        reg.add_field(SimpleField('a', 'sfc'))
     with pytest.raises(KeyError, match='already registered'):
         reg.quantity('x')(lambda ctx: None)
     reg.quantity('x', replace=True)(lambda ctx: None)
@@ -67,7 +67,7 @@ def test_duplicate_registration():
 
 def test_invalid_definitions():
     with pytest.raises(ValueError):
-        Registry().era5_field('a', 'xx', '1')
+        SimpleField('a', 'xx')
     with pytest.raises(ValueError):
         Registry().quantity('x', stage='column', reduce='mean')(lambda ctx: None)
     with pytest.raises(ValueError):
@@ -90,11 +90,11 @@ def test_evaluate_missing_era5_field():
 
 def test_default_registry_subsets():
     # Only what is needed is requested.
-    assert {f.key for f in ls2d.registry.required_era5_fields(['ug', 'vg'])} == {'pl:z', 'sfc:sp'}
+    assert {f.key for f in ls2d.era5.registry.required_fields(['ug', 'vg'])} == {'pl:z', 'sfc:sp'}
     assert {f.key for f in ls2d.required_era5_fields(['ps'])} == {'sfc:sp'}
     assert {f.key for f in ls2d.required_era5_fields(['wq'])} == {'sfc:ie', 'sfc:sp', 'sfc:skt', 'ml:q'}
     # All LES outputs need the full catalogue.
-    assert len(ls2d.required_era5_fields()) == len(ls2d.registry.era5_fields())
+    assert len(ls2d.required_era5_fields()) == len(ls2d.era5.registry.fields())
 
 
 def test_column_names():

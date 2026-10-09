@@ -19,16 +19,21 @@ z = np.arange(10, 5000, 50).astype(float)
 ARCO_PHYSICS = {'h2o_lay', 'wq'}
 
 
-def assert_var_close(new, ref, v, rtol):
+def assert_var_close(new, ref, v, rtol, atol_rel=0):
+    """
+    `atol_rel`: absolute tolerance relative to the maximum of the field, for float32 input
+    where near-zero values (e.g. `wls`) have large relative round-off errors.
+    """
     assert new[v].dims == ref[v].dims, v
-    np.testing.assert_allclose(new[v].values, ref[v].values, rtol=rtol, atol=0, err_msg=v)
+    atol = atol_rel * float(np.abs(ref[v]).max())
+    np.testing.assert_allclose(new[v].values, ref[v].values, rtol=rtol, atol=atol, err_msg=v)
 
 
 def golden(name):
     return xr.open_dataset(os.path.join(DATA, f'golden_{name}.nc'))
 
 
-def assert_close(new, ref, rtol, skip=(), long_names=True):
+def assert_close(new, ref, rtol, skip=(), long_names=True, atol_rel=0):
     """
     `long_names=False` for the `develop_arco` golden file, which renamed some long names;
     the long names of the released version (legacy golden files) are kept.
@@ -37,7 +42,7 @@ def assert_close(new, ref, rtol, skip=(), long_names=True):
     for v in ref.data_vars:
         if v in skip:
             continue
-        assert_var_close(new, ref, v, rtol)
+        assert_var_close(new, ref, v, rtol, atol_rel)
         assert new[v].attrs['units'] == ref[v].attrs['units'], v
         if long_names:
             assert new[v].attrs['long_name'] == ref[v].attrs['long_name'], v
@@ -70,14 +75,14 @@ def test_arco_vs_golden(settings):
     # ARCO files are float32: compare at single precision.
     raw = ls2d.read_era5(dict(settings, data_source='ARCO'))
     les = ls2d.get_les_input(ls2d.calculate_forcings(raw, n_av=1), z)
-    assert_close(les, golden('arco'), rtol=1e-5, long_names=False)
+    assert_close(les, golden('arco'), rtol=1e-5, long_names=False, atol_rel=1e-6)
 
 
 def test_create_column_input_compat(settings):
     # `develop_arco` API: field quantities on 3D grid -> LES input.
     ds_3d = ls2d.read_era5_arco(settings)
     les = ls2d.create_column_input(ds_3d, z, n_av=1)
-    assert_close(les, golden('arco'), rtol=1e-5, long_names=False)
+    assert_close(les, golden('arco'), rtol=1e-5, long_names=False, atol_rel=1e-6)
 
 
 def test_global_attributes(settings):

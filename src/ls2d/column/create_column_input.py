@@ -21,7 +21,7 @@
 # LS2D modules
 from ls2d.forcing.les import get_les_input, les_outputs, les_sources
 from ls2d.forcing.pipeline import calculate_forcings
-from ls2d.forcing.registry import registry
+from ls2d.forcing.source import get_source
 
 
 def create_column_input(ds, z, n_av=0, method='2nd'):
@@ -45,6 +45,7 @@ def create_column_input(ds, z, n_av=0, method='2nd'):
 
     # All LES outputs that can be computed from the content of `ds`.
     available = set(ds.data_vars)
+    registry = get_source(ds.attrs.get('ls2d_source', 'era5')).registry
     outputs = [o for o in les_outputs() if all(registry.can_resolve(s, available) for s in les_sources([o]))]
 
     column = calculate_forcings(ds, n_av=n_av, method=method, outputs=outputs)

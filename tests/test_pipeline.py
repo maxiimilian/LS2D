@@ -95,9 +95,9 @@ def test_add_new_era5_variable(settings, era5_path, clean_registry, monkeypatch,
     shutil.copytree(era5_path, tmp_path / 'era5')
     settings = dict(settings, era5_path=str(tmp_path / 'era5'))
 
-    ls2d.era5_field('t2m', 'sfc', '167.128', cds='2m_temperature', arco='2m_temperature', units='K')
+    ls2d.era5.field('t2m', 'sfc', '167.128', cds='2m_temperature', arco='2m_temperature', units='K')
 
-    @ls2d.quantity('t2m', requires=('sfc:t2m',), units='K', long_name='2 m temperature', reduce='mean')
+    @ls2d.era5.quantity('t2m', requires=('sfc:t2m',), units='K', long_name='2 m temperature', reduce='mean')
     def t2m(t2m, ctx):
         return t2m
 
@@ -153,10 +153,10 @@ def test_arco_field_checks(clean_registry):
     fields = ls2d.required_era5_fields()
     assert arco._arco_fields(fields) == fields
 
-    ls2d.era5_field('no_arco', 'sfc', '1.128', cds='no_arco')
+    ls2d.era5.field('no_arco', 'sfc', '1.128', cds='no_arco')
     with pytest.raises(ValueError, match='not available in Google ARCO'):
         arco._arco_fields([clean_registry['sfc:no_arco']])
 
-    ls2d.era5_field('z', 'sfc', '129.128', cds='geopotential', arco='geopotential_at_surface')
+    ls2d.era5.field('z', 'sfc', '129.128', cds='geopotential', arco='geopotential_at_surface')
     with pytest.raises(ValueError, match='same short name'):
         arco._arco_fields([clean_registry['sfc:z'], clean_registry['pl:z']])

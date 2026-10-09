@@ -33,9 +33,8 @@ import gcsfs
 import ls2d.ecmwf.era_tools as era_tools
 from ls2d.google.arco_tools import get_layout, read_rows
 from ls2d.core.logger import logger
-from ls2d.forcing.pipeline import required_era5_fields
+from ls2d.forcing.source import get_source
 from ls2d.forcing.raw import fields_to_download, group_by_levtype
-from ls2d.forcing.registry import registry
 
 _bucket = 'gcp-public-data-arco-era5/ar'
 _store_ml = f'{_bucket}/model-level-1h-0p25deg.zarr-v1'
@@ -120,8 +119,9 @@ def download_era5_arco(settings, batch_size=512, outputs=None, fields=None):
     end = era_tools.lower_to_hour(settings['end_date'])
     an_dates = era_tools.get_required_analysis(start, end)
 
-    fields = _arco_fields(required_era5_fields(outputs) if fields is None else fields)
-    candidates = [f for f in registry.era5_fields() if f.arco is not None]
+    era5 = get_source('era5')
+    fields = _arco_fields(era5.required_fields(outputs) if fields is None else fields)
+    candidates = [f for f in era5.registry.fields() if f.arco is not None]
 
     download_dates = []
     download_fields = []

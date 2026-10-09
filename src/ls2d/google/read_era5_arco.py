@@ -27,7 +27,8 @@ import xarray as xr
 # LS2D modules
 import ls2d.ecmwf.era_tools as era_tools
 from ls2d.core.logger import logger
-from ls2d.forcing.pipeline import required_era5_fields, compute_fields
+from ls2d.forcing.pipeline import compute_fields
+from ls2d.forcing.source import get_source
 from ls2d.forcing.raw import standardize, missing_fields, group_by_levtype
 
 
@@ -47,7 +48,7 @@ def read_era5_arco_raw(settings, outputs=None, fields=None):
             Read exactly these ERA5 fields (overrides `outputs`).
     """
 
-    fields = required_era5_fields(outputs) if fields is None else fields
+    fields = get_source('era5').required_fields(outputs) if fields is None else fields
 
     start = era_tools.lower_to_hour(settings['start_date'])
     end = era_tools.lower_to_hour(settings['end_date'])
@@ -81,7 +82,12 @@ def read_era5_arco_raw(settings, outputs=None, fields=None):
 
     era = xr.concat(datasets, dim='time').sel(time=slice(start, end))
 
-    attrs = dict(central_lat=settings['central_lat'], central_lon=settings['central_lon'], source='ERA5 (Google ARCO)')
+    attrs = dict(
+        central_lat=settings['central_lat'],
+        central_lon=settings['central_lon'],
+        source='ERA5 (Google ARCO)',
+        ls2d_source='era5',
+    )
     return standardize({levtype: era for levtype in group_by_levtype(fields)}, fields, attrs).load()
 
 

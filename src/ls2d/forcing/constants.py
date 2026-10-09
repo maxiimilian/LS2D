@@ -18,22 +18,21 @@
 # along with LS2D.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-from .registry import Registry, Field, SimpleField, Quantity, core, quantity
-from .context import Context, Domain
-from .standard import STANDARD, StandardVar
+"""
+Physical constants used by the source-agnostic (core) quantities.
+Values as in the IFS (IFS documentation part IV, chapter 12), so that ERA5 results
+are identical to previous versions of LS2D.
+"""
 
-# Populate the core registry with the source-agnostic quantities.
-from . import derived as _derived, column as _column  # noqa: F401
+grav = 9.80665  # Gravitational acceleration (m s-2)
+Rd = 287.0597  # Gas constant dry air (J kg-1 K-1)
+Rv = 461.5250  # Gas constant water vapour (J kg-1 K-1)
+eps = Rv / Rd - 1.0  # (-)
+ep = Rd / Rv  # (-)
+cpd = 1004.7090  # Specific heat dry air at constant pressure (J kg-1 K-1)
+Lv = 2.5008e6  # Latent heat of vaporisation (J kg-1)
+p0 = 1e5  # Reference pressure Exner function (Pa)
+omega_earth = 7.2921e-5  # Angular velocity earth (s-1)
 
-from .les import LesVar, les_output, les_outputs, get_les_input
-from .source import Source, register_source, get_source, sources
-from .pipeline import (
-    column_names,
-    required_fields,
-    required_era5_fields,
-    default_outputs,
-    download,
-    read,
-    compute_fields,
-    calculate_forcings,
-)
+# Molar mass ratio dry air / ozone.
+md_mo3 = 28.9644 / 47.9982

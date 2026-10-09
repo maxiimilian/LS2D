@@ -34,12 +34,9 @@ import numpy as np
 import ls2d.core.finite_difference as fd
 import ls2d.core.spatial_tools as spatial
 from ls2d.core.logger import logger
-from ls2d.ecmwf.IFS_tools import IFS_tools
+import ls2d.forcing.constants as c
 
-omega_earth = 7.2921e-5
 r_earth_2nd = 6.37e6  # Earth radius used by the 2nd order gradients (as in previous versions of LS2D)
-
-ifs = IFS_tools('L137')
 
 METHODS = {'2nd': 1, '4th': 2}  # method -> halo size (grid points)
 
@@ -173,12 +170,11 @@ class Context:
     n_av: int = 0
     method: str = '2nd'
     domain: Optional[Domain] = None
-    ifs: IFS_tools = ifs
 
     @property
     def fc(self):
         """Coriolis parameter (s-1)."""
-        return 2 * omega_earth * np.sin(np.deg2rad(self.central_lat))
+        return 2 * c.omega_earth * np.sin(np.deg2rad(self.central_lat))
 
     def _dom(self):
         if self.domain is None:

@@ -19,7 +19,7 @@
 #
 
 """
-Validation of the raw ERA5 dataset, which every backend (CDS/MARS, Google ARCO, ...) must provide.
+Validation of the raw dataset, which every source (ERA5, ...) must provide.
 See `ls2d.forcing.raw` for the conventions.
 """
 
@@ -28,7 +28,8 @@ import numpy as np
 
 # LS2D modules
 from ls2d.core.logger import logger
-from ls2d.forcing.registry import registry, Era5Field
+from ls2d.forcing.registry import Field
+from ls2d.forcing.source import get_source
 
 _dims = {
     'ml': ('time', 'level', 'latitude', 'longitude'),
@@ -44,12 +45,16 @@ def _fail(msg):
 
 def validate(ds):
     """
-    Check if `ds` follows the raw ERA5 dataset definition.
+    Check if `ds` follows the raw dataset definition.
     """
 
+    if 'ls2d_source' not in ds.attrs:
+        _fail('Raw dataset: missing attribute "ls2d_source"')
+    registry = get_source(ds.attrs['ls2d_source']).registry
+
     for name, da in ds.data_vars.items():
-        if name not in registry or not isinstance(registry[name], Era5Field):
-            _fail(f'Raw dataset: "{name}" is not a registered ERA5 field')
+        if name not in registry or not isinstance(registry[name], Field):
+            _fail(f'Raw dataset: "{name}" is not a registered field of source "{ds.attrs["ls2d_source"]}"')
         dims = _dims[registry[name].levtype]
         if da.dims != dims:
             _fail(f'Raw dataset: "{name}" has dims {da.dims}, expected {dims}')

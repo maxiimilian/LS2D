@@ -87,18 +87,18 @@ column = ls2d.calculate_forcings(raw, n_av=1, method='2nd', outputs=outputs)  # 
 les_input = ls2d.get_les_input(column, z, outputs=outputs)      # interpolated to LES grid `z`
 ```
 
-`outputs` selects the LES variables (`ls2d.les_outputs()` lists all of them, which is the default). Pass the same list to every step. The old interface (`era = ls2d.Read_era5(settings)`, `era.calculate_forcings()`, `era.get_les_input(z)`) still works, and is a thin wrapper around these functions.
+`outputs` selects the LES variables (default: all that the source can provide, `ls2d.era5.default_outputs()`). Pass the same list to every step. `ls2d.download()` and `ls2d.read()` do the same for any data source, selected with `settings['source']` (default `'era5'`). The old interface (`era = ls2d.Read_era5(settings)`, `era.calculate_forcings()`, `era.get_les_input(z)`) still works, and is a thin wrapper around these functions.
 
 ### Adding variables
 
-Everything that (LS)<sup>2</sup>D downloads and computes is defined in a registry (see `src/ls2d/forcing/`). Each quantity declares what it requires, and the registry works out what to download and in which order to compute things. Adding e.g. the 2 m temperature to the download, processing, and LES input:
+Everything that (LS)<sup>2</sup>D downloads and computes is defined in registries (see `src/ls2d/forcing/`). Each quantity declares what it requires, and the registry works out what to download and in which order to compute things. Adding e.g. the 2 m temperature from ERA5 to the download, processing, and LES input:
 
 ```python
 # 1. Raw ERA5 field, with its names for MARS / CDS / Google ARCO.
-ls2d.era5_field('t2m', 'sfc', '167.128', cds='2m_temperature', arco='2m_temperature', units='K')
+ls2d.era5.field('t2m', 'sfc', '167.128', cds='2m_temperature', arco='2m_temperature', units='K')
 
 # 2. Quantity computed from it, here simply the field itself, averaged over the `n_av` area.
-@ls2d.quantity('t2m', requires=('sfc:t2m',), units='K', long_name='2 m temperature', reduce='mean')
+@ls2d.era5.quantity('t2m', requires=('sfc:t2m',), units='K', long_name='2 m temperature', reduce='mean')
 def t2m(t2m, ctx):
     return t2m
 
@@ -106,7 +106,7 @@ def t2m(t2m, ctx):
 ls2d.les_output('t2m', 't2m', '2 m temperature', 'K')
 ```
 
-Existing ERA5 files without the new field are downloaded again by `ls2d.download_era5()`. Quantities are either computed pointwise on the ERA5 grid (`stage='field'`, the default), or from the averaging area including a halo for horizontal gradients (`stage='column'`), for example:
+Existing ERA5 files without the new field are downloaded again by `ls2d.download_era5()`. Quantities are either computed pointwise on the grid (`stage='field'`, the default), or from the averaging area including a halo for horizontal gradients (`stage='column'`). Quantities that only use standard quantities (see below) are source-agnostic, and are registered in the core with `ls2d.quantity`:
 
 ```python
 @ls2d.quantity('dtT_advec', requires=('T', 'u', 'v'), stage='column', units='K s-1')
@@ -114,7 +114,26 @@ def dtT_advec(T, u, v, ctx):
     return ctx.advec(T, u, v)   # also available: ctx.mean(), ctx.ddx(), ctx.ddy(), ctx.nearest(), ctx.fc
 ```
 
-See `src/ls2d/forcing/fields.py` and `src/ls2d/forcing/column.py` for all built-in quantities.
+### Data sources
+
+(LS)<sup>2</sup>D separates the data source from the processing. A source (`ls2d.Source`, e.g. `ls2d.era5`) has its own raw fields, functions to download and read them, and recipes that turn them into a fixed set of *standard quantities* (`src/ls2d/forcing/standard.py`): `T`, `qv`, `ql`, `u`, `v`, `omega`, `p` or `ph`, `phi_p`, `ps`, `ts`, `wth`, `wq`, and optionally ozone, roughness lengths, soil, and land surface fields. Everything else (`thl`, `qt`, heights, advective tendencies, geostrophic wind, the LES input, ...) is derived by the source-agnostic core, so all sources produce the same LES input definition. The standard fixes units, dims (levels from surface to top, latitude south to north), and conventions (fluxes positive upward), and is checked when quantities are registered and computed.
+
+To add a source (e.g. GFS), create `src/ls2d/sources/<name>.py` with:
+
+```python
+src = ls2d.register_source(ls2d.Source('gfs', read=read_gfs, download=download_gfs))
+src.field('t', 'pl', units='K')                          # raw fields: `{levtype}:{name}`, levtype in ml/pl/sfc
+
+@src.quantity('T', requires=('pl:t', 'ps'))               # recipes for the standard quantities
+def T(t, ps, ctx):
+    return to_terrain_following(t, ps, sigma)            # pressure levels -> terrain-following, see `ls2d.forcing.vertical`
+...
+src.validate()                                           # checks that all required standard quantities can be provided
+```
+
+`read_gfs(settings, outputs=None, fields=None)` returns the raw dataset (see `src/ls2d/forcing/raw.py`) with attribute `ls2d_source='gfs'`; `ls2d.read(dict(settings, source='gfs'))` then dispatches to it. `tests/synthetic_plev.py` is a complete example of a pressure level only source, which reproduces the ERA5 LES input within 2%. LES outputs that a source can not provide (e.g. the HTESSEL land surface types without HTESSEL fields) are left out automatically; land surface scheme specific outputs carry the attribute `land_surface_scheme`.
+
+See `src/ls2d/sources/era5.py`, `src/ls2d/forcing/derived.py`, and `src/ls2d/forcing/column.py` for all built-in quantities.
 
 ## Contributing guidelines
 
